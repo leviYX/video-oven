@@ -1,7 +1,6 @@
 package dev.videooven.translation;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -10,6 +9,7 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -54,28 +54,39 @@ public final class OpenAiCompatibleChatTranslator implements Translator {
             return List.of();
         }
 
-        // 要求模型返回 JSON 数组，方便校验字幕条数和顺序。
+        // 带编号请求和响应，降低模型合并短字幕后导致条数错位的概率。
+        List<Map<String, Object>> inputItems = new ArrayList<>(texts.size());
+        for (int i = 0; i < texts.size(); i++) {
+            inputItems.add(Map.of("id", i, "text", texts.get(i)));
+        }
         String requestBody = objectMapper.writeValueAsString(Map.of(
                 "model", model,
                 "temperature", 0,
                 "messages", List.of(
                         Map.of(
                                 "role", "system",
-                                "content", "You translate subtitle cues. Return only a JSON array of strings."
+                                "content", """
+                                        You translate subtitle cues.
+                                        Return only a JSON array of objects.
+                                        Each output object must have the same numeric id and one translated text string.
+                                        Do not merge, omit, add, or renumber items.
+                                        """
                         ),
                         Map.of(
                                 "role", "user",
                                 "content", """
                                         Translate each subtitle cue from %s to %s.
                                         Preserve line breaks inside each cue when natural.
-                                        Return exactly the same number of JSON array items as the input.
+                                        Return exactly the same ids as the input, in the same order.
+                                        Output format:
+                                        [{"id":0,"text":"translated text"}]
 
                                         Input JSON:
                                         %s
                                         """.formatted(
                                         sourceLanguage,
                                         targetLanguage,
-                                        objectMapper.writeValueAsString(texts)
+                                        objectMapper.writeValueAsString(inputItems)
                                 )
                         )
                 )
@@ -111,13 +122,31 @@ public final class OpenAiCompatibleChatTranslator implements Translator {
         if (!content.isTextual()) {
             throw new IOException(providerName + " response did not contain message content");
         }
-        return parseJsonArray(content.asText());
+        return parseTranslationItems(content.asText());
     }
 
-    private List<String> parseJsonArray(String json) throws JsonProcessingException {
+    private List<String> parseTranslationItems(String json) throws IOException {
         // 有些模型会把 JSON 包在 Markdown 代码块里，这里顺手剥掉。
-        return objectMapper.readValue(stripMarkdownFence(json), new TypeReference<>() {
-        });
+        JsonNode items = objectMapper.readTree(stripMarkdownFence(json));
+        if (!items.isArray()) {
+            throw new IOException("translation response is not a JSON array");
+        }
+
+        List<String> translations = new ArrayList<>(items.size());
+        for (int expectedId = 0; expectedId < items.size(); expectedId++) {
+            JsonNode item = items.get(expectedId);
+            if (item.isTextual()) {
+                translations.add(item.asText());
+                continue;
+            }
+            JsonNode id = item.get("id");
+            JsonNode text = item.get("text");
+            if (id == null || !id.canConvertToInt() || id.asInt() != expectedId || text == null || !text.isTextual()) {
+                throw new IOException("translation response item " + expectedId + " did not match expected id/text");
+            }
+            translations.add(text.asText());
+        }
+        return translations;
     }
 
     private static String stripMarkdownFence(String text) {

@@ -89,6 +89,8 @@ output.zh-en.srt
 
 ## 使用 DeepSeek 翻译
 
+DeepSeek 翻译会自动分批发送字幕，默认每批 50 条。如果某一批仍然出现漏翻或合并条目，程序会自动把失败批次拆小后重试。
+
 推荐直接用参数传入 DeepSeek API Key：
 
 ```bash
@@ -98,6 +100,21 @@ java -jar target/video-oven-0.1.0.jar \
   --translator deepseek \
   --deepseek-api-key "你的 DeepSeek API Key" \
   --deepseek-model deepseek-v4-flash \
+  --mode bilingual \
+  --source en \
+  --target zh-CN
+```
+
+如果遇到模型偶发漏翻，可以把批量调小，例如每批 25 条：
+
+```bash
+java -jar target/video-oven-0.1.0.jar \
+  --url "https://www.youtube.com/watch?v=jKi2SvWOCXc" \
+  --output output.zh-en.srt \
+  --translator deepseek \
+  --deepseek-api-key "你的 DeepSeek API Key" \
+  --deepseek-model deepseek-v4-flash \
+  --translation-batch-size 25 \
   --mode bilingual \
   --source en \
   --target zh-CN
@@ -212,12 +229,12 @@ input.mp4
 
 这种方式不会重新压缩视频画面，字幕也方便后续修改。
 
-## 合并软字幕轨
+## 合并软字幕轨（可开关，不一定默认显示）
 
-如果你想把字幕作为一个可开关字幕轨写进 mp4，可以用：
+如果你只想把字幕作为一个可开关字幕轨写进 mp4，可以用：
 
 ```bash
-ffmpeg -y \
+./tool/ffmpeg -y \
   -i input.mp4 \
   -i output.zh-en.srt \
   -c copy \
@@ -231,35 +248,59 @@ ffmpeg -y \
 output.with-subtitle-track.mp4
 ```
 
-注意：软字幕轨不是硬字幕，播放器或平台可能不显示。B 站更推荐单独上传 `.srt`。
+这个文件里有字幕轨，但字幕没有烧进画面。很多播放器需要手动打开字幕轨，部分平台也可能忽略 mp4 内置字幕轨。
 
-## 压制硬字幕
+可以用下面的命令确认字幕轨是否写入成功：
 
-硬字幕会把字幕永久渲染进视频画面。这个能力依赖 ffmpeg 的 `subtitles/libass` 滤镜。
+```bash
+./tool/ffmpeg -hide_banner -i output.with-subtitle-track.mp4
+```
 
-先检查你当前的 ffmpeg 是否支持：
+如果看到类似这一行，说明软字幕轨已经存在：
+
+```text
+Stream #0:2: Subtitle: mov_text
+```
+
+如果你想让视频一打开就直接看到字幕，请使用下面的“压制硬字幕”。B 站投稿更推荐上传原视频后单独上传 `.srt`。
+
+## 压制硬字幕（直接显示在画面上）
+
+硬字幕会把字幕永久渲染进视频画面。生成的视频打开就能看到字幕，但视频画面会重新编码，处理速度比软字幕慢。
+
+这个能力依赖 ffmpeg 的 `subtitles/libass` 滤镜。先检查你当前的 ffmpeg 是否支持：
+
+如果你使用项目里的独立 ffmpeg：
+
+```bash
+./tool/ffmpeg -hide_banner -filters | grep -E "subtitles| ass "
+```
+
+如果你使用系统 ffmpeg：
 
 ```bash
 ffmpeg -hide_banner -filters | grep -E "subtitles| ass "
 ```
 
-如果能看到类似输出，说明可以压制硬字幕：
+能看到下面两行之一就可以压制硬字幕：
 
 ```text
 ass               V->V       Render ASS subtitles onto input video using the libass library.
 subtitles         V->V       Render text subtitles onto input video using the libass library.
 ```
 
-然后执行：
+用项目里的独立 ffmpeg 压制硬字幕：
 
 ```bash
-ffmpeg -y \
+./tool/ffmpeg -y \
   -i input.mp4 \
   -vf "subtitles=filename='output.zh-en.srt'" \
   -c:v libx264 \
   -c:a copy \
   output.with-hard-subtitles.mp4
 ```
+
+如果你使用系统 ffmpeg，把命令开头的 `./tool/ffmpeg` 换成 `ffmpeg`。
 
 如果你的 ffmpeg 报错：
 
@@ -271,17 +312,17 @@ No such filter: 'subtitles'
 
 - 改用 B 站单独上传 `.srt`。
 - 使用支持 `subtitles` 滤镜的 ffmpeg 版本。
-- 先用软字幕轨方案临时处理。
+- 先用软字幕轨方案临时处理，但要在播放器里手动打开字幕轨。
 
-### 使用独立 ffmpeg 压制硬字幕
+### 安装项目内独立 ffmpeg
 
 如果 Homebrew 的 ffmpeg 没有 `subtitles` 滤镜，可以下载一个独立的 macOS ffmpeg 放到项目里。这样不影响系统 ffmpeg，也不需要 conda。
 
 在项目根目录执行：
 
 ```bash
-mkdir -p tools/ffmpeg
-cd tools/ffmpeg
+mkdir -p tool
+cd tool
 
 curl -L -o ffmpeg.zip \
   "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip"
@@ -298,7 +339,7 @@ cd ../..
 检查独立 ffmpeg 是否支持硬字幕：
 
 ```bash
-./tools/ffmpeg/ffmpeg -hide_banner -filters | grep -E "subtitles| ass "
+./tool/ffmpeg -hide_banner -filters | grep -E "subtitles| ass "
 ```
 
 看到下面两行之一就可以：
@@ -311,7 +352,7 @@ subtitles         V->V       Render text subtitles onto input video using the li
 用独立 ffmpeg 压制硬字幕：
 
 ```bash
-./tools/ffmpeg/ffmpeg -y \
+./tool/ffmpeg -y \
   -i input.mp4 \
   -vf "subtitles=filename='output.zh-en.srt'" \
   -c:v libx264 \
@@ -319,15 +360,15 @@ subtitles         V->V       Render text subtitles onto input video using the li
   output.with-hard-subtitles.mp4
 ```
 
-如果你当前目录已经在 `tools/ffmpeg` 里面，可以这样执行：
+如果你当前目录已经在 `tool` 里面，可以这样执行：
 
 ```bash
 ./ffmpeg -y \
-  -i ../../input.mp4 \
-  -vf "subtitles=filename='../../output.zh-en.srt'" \
+  -i ../input.mp4 \
+  -vf "subtitles=filename='../output.zh-en.srt'" \
   -c:v libx264 \
   -c:a copy \
-  ../../output.with-hard-subtitles.mp4
+  ../output.with-hard-subtitles.mp4
 ```
 
 生成的文件：
@@ -390,6 +431,24 @@ yt-dlp --list-subs "https://www.youtube.com/watch?v=视频ID"
 
 确保字幕文件是 UTF-8。当前工具写出的 `.srt` 使用 Java 默认 UTF-8 写入。
 
+### 字幕里出现 &nbsp;
+
+`&nbsp;` 是 HTML 实体，常见于 YouTube 的 WebVTT 字幕。当前版本解析 `.srt` / `.vtt` 时会自动把 `&nbsp;`、`&amp;`、`&lt;` 等常见实体转成普通文本，并去掉简单 VTT 标签。
+
+如果旧字幕文件里已经有 `&nbsp;`，需要重新生成 `.srt`，再重新压制硬字幕。
+
+### DeepSeek returned X translations for Y inputs
+
+这是模型返回的翻译条数和输入字幕条数不一致。程序会自动把失败批次拆小后重试；如果拆到单条仍然失败，会主动报错停止，避免字幕文本和时间轴错位。
+
+DeepSeek 默认已按每批 50 条字幕分批翻译。如果某个视频仍然不稳定，可以调小初始批量：
+
+```bash
+--translation-batch-size 25
+```
+
+如果还不稳定，可以继续调到 `10`。批量越小越稳，但请求次数会变多。
+
 ## 命令参数
 
 核心参数：
@@ -401,6 +460,7 @@ yt-dlp --list-subs "https://www.youtube.com/watch?v=视频ID"
 - `--mode`：输出模式，支持 `bilingual`、`chinese`。
 - `--source`：源语言，默认 `en`。
 - `--target`：目标语言，默认 `zh-CN`。
+- `--translation-batch-size`：每次翻译请求包含的字幕条数，默认 `50`。
 
 DeepSeek 参数：
 
@@ -415,9 +475,7 @@ OpenAI 参数：
 ## 后续可扩展方向
 
 - 自动下载视频并生成完整烤肉视频。
-- 集成支持硬字幕的 ffmpeg 检测和压制流程。
 - 集成 Whisper / faster-whisper，在没有字幕时从音频识别英文。
-- 增加批量处理。
 - 增加 Web 页面或桌面 UI。
 
 ## 版权提醒

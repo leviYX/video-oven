@@ -7,6 +7,7 @@ import dev.videooven.platform.YtDlpSubtitleDownloader;
 import dev.videooven.subtitle.SrtParser;
 import dev.videooven.subtitle.SubtitleParser;
 import dev.videooven.subtitle.VttParser;
+import dev.videooven.translation.BatchedTranslator;
 import dev.videooven.translation.FakeTranslator;
 import dev.videooven.translation.DeepSeekTranslator;
 import dev.videooven.translation.OpenAiTranslator;
@@ -62,6 +63,9 @@ public final class VideoOvenCli implements Callable<Integer> {
 
     @Option(names = "--deepseek-api-key", description = "DeepSeek API key. Falls back to DEEPSEEK_API_KEY.")
     private String deepSeekApiKey;
+
+    @Option(names = "--translation-batch-size", defaultValue = "50", description = "Subtitle cues per translation request.")
+    private int translationBatchSize;
 
     public VideoOvenCli() {
         this(new YtDlpSubtitleDownloader());
@@ -134,7 +138,10 @@ public final class VideoOvenCli implements Callable<Integer> {
                             "--deepseek-api-key or DEEPSEEK_API_KEY is required when --translator deepseek is used"
                     );
                 }
-                yield new DeepSeekTranslator(apiKey, deepSeekBaseUrl, deepSeekModel);
+                yield new BatchedTranslator(
+                        new DeepSeekTranslator(apiKey, deepSeekBaseUrl, deepSeekModel),
+                        translationBatchSize
+                );
             }
             case "openai" -> {
                 String apiKey = System.getenv("OPENAI_API_KEY");

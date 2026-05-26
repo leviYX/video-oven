@@ -43,7 +43,7 @@ public final class VttParser implements SubtitleParser {
 
             List<String> textLines = new ArrayList<>();
             while (index < lines.size() && !lines.get(index).isBlank()) {
-                textLines.add(lines.get(index));
+                textLines.add(SubtitleTextCleaner.clean(lines.get(index)));
                 index++;
             }
             cues.add(new SubtitleCue(toSrtTimestamp(matcher.group(1)), toSrtTimestamp(matcher.group(2)), textLines));
