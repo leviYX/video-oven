@@ -6,24 +6,36 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 
 public final class YtDlpSubtitleDownloader implements SubtitleDownloader {
+    private final YtDlpOptions options;
+
+    public YtDlpSubtitleDownloader() {
+        this(YtDlpOptions.none());
+    }
+
+    public YtDlpSubtitleDownloader(YtDlpOptions options) {
+        this.options = options;
+    }
+
     @Override
     public Path download(String url, String sourceLanguage) throws IOException, InterruptedException {
         Path workDir = Files.createTempDirectory("video-oven-yt-dlp-");
         // 优先拿作者字幕，同时允许自动字幕，普通 YouTube 视频也能跑通。
-        List<String> command = List.of(
+        List<String> command = new ArrayList<>(List.of(
                 "yt-dlp",
                 "--skip-download",
                 "--write-subs",
                 "--write-auto-subs",
                 "--sub-langs", sourceLanguage,
                 "--sub-format", "vtt/srt",
-                "-o", workDir.resolve("subtitle.%(ext)s").toString(),
-                url
-        );
+                "-o", workDir.resolve("subtitle.%(ext)s").toString()
+        ));
+        options.appendTo(command);
+        command.add(url);
 
         ExternalCommand.Result result = ExternalCommand.run(command, Duration.ofMinutes(5));
         result.requireSuccess();

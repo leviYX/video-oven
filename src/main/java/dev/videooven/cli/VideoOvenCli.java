@@ -1,8 +1,13 @@
 package dev.videooven.cli;
 
+import dev.videooven.asr.AudioTranscriber;
+import dev.videooven.asr.WhisperCliAudioTranscriber;
 import dev.videooven.processor.OutputMode;
 import dev.videooven.processor.SubtitleProcessor;
+import dev.videooven.platform.MediaDownloader;
 import dev.videooven.platform.SubtitleDownloader;
+import dev.videooven.platform.YtDlpMediaDownloader;
+import dev.videooven.platform.YtDlpOptions;
 import dev.videooven.platform.YtDlpSubtitleDownloader;
 import dev.videooven.subtitle.SrtParser;
 import dev.videooven.subtitle.SubtitleParser;
@@ -19,6 +24,7 @@ import picocli.CommandLine.Option;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.Locale;
 import java.util.concurrent.Callable;
 
@@ -26,12 +32,14 @@ import java.util.concurrent.Callable;
         name = "video-oven",
         mixinStandardHelpOptions = true,
         version = "video-oven 0.1.0",
-        description = "Translate English SRT/VTT subtitles into Chinese or bilingual SRT subtitles."
+        description = "Translate English subtitles or transcribed media into Chinese or bilingual SRT subtitles."
 )
 public final class VideoOvenCli implements Callable<Integer> {
     private final SubtitleDownloader subtitleDownloader;
+    private final MediaDownloader mediaDownloader;
+    private final AudioTranscriber injectedAudioTranscriber;
 
-    @Option(names = "--input", description = "Input .srt or .vtt subtitle file.")
+    @Option(names = "--input", description = "Input .srt/.vtt subtitle file, or audio/video media file for ASR.")
     private Path input;
 
     @Option(names = "--url", description = "Online video URL. Requires yt-dlp on PATH.")
@@ -67,12 +75,40 @@ public final class VideoOvenCli implements Callable<Integer> {
     @Option(names = "--translation-batch-size", defaultValue = "50", description = "Subtitle cues per translation request.")
     private int translationBatchSize;
 
+    @Option(names = "--asr", defaultValue = "auto", description = "ASR mode for media without subtitles: auto, never, or force.")
+    private String asrMode;
+
+    @Option(names = "--whisper-command", defaultValue = "${env:WHISPER_COMMAND:-whisper}", description = "Whisper CLI command.")
+    private String whisperCommand;
+
+    @Option(names = "--whisper-model", defaultValue = "${env:WHISPER_MODEL:-small}", description = "Whisper model used for ASR.")
+    private String whisperModel;
+
+    @Option(names = "--asr-timeout-minutes", defaultValue = "120", description = "ASR command timeout in minutes.")
+    private long asrTimeoutMinutes;
+
+    @Option(names = "--yt-dlp-cookies-from-browser", description = "Pass browser cookies to yt-dlp, for example: chrome or safari.")
+    private String ytDlpCookiesFromBrowser;
+
+    @Option(names = "--yt-dlp-cookies", description = "Pass a cookies.txt file to yt-dlp.")
+    private Path ytDlpCookies;
+
     public VideoOvenCli() {
-        this(new YtDlpSubtitleDownloader());
+        this(null, null, null);
     }
 
     public VideoOvenCli(SubtitleDownloader subtitleDownloader) {
+        this(subtitleDownloader, null, null);
+    }
+
+    VideoOvenCli(
+            SubtitleDownloader subtitleDownloader,
+            MediaDownloader mediaDownloader,
+            AudioTranscriber audioTranscriber
+    ) {
         this.subtitleDownloader = subtitleDownloader;
+        this.mediaDownloader = mediaDownloader;
+        this.injectedAudioTranscriber = audioTranscriber;
     }
 
     public static void main(String[] args) {
@@ -110,10 +146,37 @@ public final class VideoOvenCli implements Callable<Integer> {
             if (!Files.isRegularFile(input)) {
                 throw new CommandLine.ParameterException(new CommandLine(this), "Input file does not exist: " + input);
             }
-            return input;
+            if (isSubtitleFile(input)) {
+                return input;
+            }
+            if (isMediaFile(input)) {
+                if (!asrEnabled()) {
+                    throw new CommandLine.ParameterException(
+                            new CommandLine(this),
+                            "Input is a media file, but ASR is disabled by --asr=never: " + input
+                    );
+                }
+                return audioTranscriber().transcribe(input, sourceLanguage);
+            }
+            throw new CommandLine.ParameterException(
+                    new CommandLine(this),
+                    "Input must be a .srt/.vtt subtitle or a supported audio/video file: " + input
+            );
         }
 
-        return subtitleDownloader.download(url, sourceLanguage);
+        if (!asrForced()) {
+            try {
+                return subtitleDownloader().download(url, sourceLanguage);
+            } catch (IOException e) {
+                if (!asrEnabled()) {
+                    throw e;
+                }
+                System.err.println("No usable subtitles found, falling back to ASR: " + e.getMessage());
+            }
+        }
+
+        Path audio = mediaDownloader().downloadAudio(url);
+        return audioTranscriber().transcribe(audio, sourceLanguage);
     }
 
     private static SubtitleParser parserFor(Path input) {
@@ -125,6 +188,85 @@ public final class VideoOvenCli implements Callable<Integer> {
             return new VttParser();
         }
         throw new IllegalArgumentException("Unsupported subtitle format: " + input);
+    }
+
+    private static boolean isSubtitleFile(Path input) {
+        String fileName = input.getFileName().toString().toLowerCase(Locale.ROOT);
+        return fileName.endsWith(".srt") || fileName.endsWith(".vtt");
+    }
+
+    private static boolean isMediaFile(Path input) {
+        String fileName = input.getFileName().toString().toLowerCase(Locale.ROOT);
+        return fileName.endsWith(".mp3")
+                || fileName.endsWith(".m4a")
+                || fileName.endsWith(".wav")
+                || fileName.endsWith(".flac")
+                || fileName.endsWith(".aac")
+                || fileName.endsWith(".ogg")
+                || fileName.endsWith(".opus")
+                || fileName.endsWith(".mp4")
+                || fileName.endsWith(".mov")
+                || fileName.endsWith(".mkv")
+                || fileName.endsWith(".webm");
+    }
+
+    private boolean asrEnabled() {
+        return switch (asrMode.toLowerCase(Locale.ROOT)) {
+            case "auto", "force" -> true;
+            case "never" -> false;
+            default -> throw new IllegalArgumentException("Unsupported ASR mode: " + asrMode);
+        };
+    }
+
+    private boolean asrForced() {
+        return switch (asrMode.toLowerCase(Locale.ROOT)) {
+            case "force" -> true;
+            case "auto", "never" -> false;
+            default -> throw new IllegalArgumentException("Unsupported ASR mode: " + asrMode);
+        };
+    }
+
+    private AudioTranscriber audioTranscriber() {
+        if (injectedAudioTranscriber != null) {
+            return injectedAudioTranscriber;
+        }
+        return new WhisperCliAudioTranscriber(
+                whisperCommand,
+                whisperModel,
+                Duration.ofMinutes(asrTimeoutMinutes)
+        );
+    }
+
+    private SubtitleDownloader subtitleDownloader() {
+        if (subtitleDownloader != null) {
+            return subtitleDownloader;
+        }
+        return new YtDlpSubtitleDownloader(ytDlpOptions());
+    }
+
+    private MediaDownloader mediaDownloader() {
+        if (mediaDownloader != null) {
+            return mediaDownloader;
+        }
+        return new YtDlpMediaDownloader(ytDlpOptions());
+    }
+
+    private YtDlpOptions ytDlpOptions() {
+        String cookiesFromBrowser = firstNonBlank(
+                ytDlpCookiesFromBrowser,
+                System.getenv("YT_DLP_COOKIES_FROM_BROWSER")
+        );
+        Path cookies = ytDlpCookies;
+        String cookiesFromEnvironment = System.getenv("YT_DLP_COOKIES");
+        if (cookies == null && cookiesFromEnvironment != null && !cookiesFromEnvironment.isBlank()) {
+            cookies = Path.of(cookiesFromEnvironment);
+        }
+        if (cookiesFromBrowser != null && cookies != null) {
+            throw new IllegalArgumentException(
+                    "Use only one of --yt-dlp-cookies-from-browser or --yt-dlp-cookies"
+            );
+        }
+        return new YtDlpOptions(cookiesFromBrowser, cookies);
     }
 
     private Translator translatorFor(String name) {
@@ -158,6 +300,9 @@ public final class VideoOvenCli implements Callable<Integer> {
         if (first != null && !first.isBlank()) {
             return first;
         }
-        return second;
+        if (second != null && !second.isBlank()) {
+            return second;
+        }
+        return null;
     }
 }

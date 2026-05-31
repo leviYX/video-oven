@@ -1,37 +1,54 @@
-# Video Oven 烤肉机
+# Video Oven
 
-Video Oven 是一个 Java 25 + Maven 构建的字幕处理工具。它可以从本地字幕文件或 YouTube 视频链接读取英文字幕，调用翻译服务生成中文字幕或中英双语字幕，最终输出 `.srt` 文件。
+Video Oven 是一个命令行字幕翻译工具。它可以把英文字幕或英文音视频翻译成中文字幕，输出标准 `.srt` 文件。
 
-当前版本重点解决“把英文字幕翻译成中文/双语字幕”的核心流程。视频下载、字幕上传、字幕压制可以配合 `yt-dlp` 和 `ffmpeg` 完成。
+支持三种输入：
 
-## 功能
+- 本地 `.srt` / `.vtt` 字幕文件。
+- 本地音频或视频文件，例如 `.mp3`、`.mp4`、`.mkv`。
+- YouTube URL：优先下载已有字幕；没有字幕时自动下载音频并用 Whisper 识别。
 
-- 支持输入 `.srt` / `.vtt` 字幕文件。
-- 支持直接传 YouTube URL，自动调用 `yt-dlp` 下载字幕。
-- 支持输出中文字幕或中英双语字幕。
-- 支持 DeepSeek 翻译。
-- 支持 OpenAI 翻译。
-- 提供 `fake` 翻译器，方便本地测试命令是否跑通。
+## 安装依赖
 
-## 环境要求
-
-必须安装：
-
-- JDK 25 或更高版本
-- Maven
-
-处理 YouTube 链接时需要：
-
-- `yt-dlp`
-
-下载视频、合并字幕轨或压制字幕时需要：
-
-- `ffmpeg`
-
-macOS 可以用 Homebrew 安装：
+推荐直接运行安装脚本：
 
 ```bash
-brew install openjdk maven yt-dlp ffmpeg
+scripts/install-deps.sh
+```
+
+它会安装：
+
+- OpenJDK
+- Maven
+- `yt-dlp`
+- `pipx`
+- Whisper CLI
+
+`ffmpeg` 不需要安装，项目会使用 `tool/ffmpeg`。
+
+也可以手动安装基础依赖：
+
+```bash
+brew install openjdk maven yt-dlp
+```
+
+如果要处理没有字幕的音视频，还需要 Whisper CLI。推荐先安装 `pipx`：
+
+```bash
+brew install pipx
+pipx ensurepath
+```
+
+执行 `pipx ensurepath` 后，重开一个终端，再安装 Whisper：
+
+```bash
+pipx install openai-whisper
+```
+
+如果不想使用 `pipx`，也可以用 `pip` 安装：
+
+```bash
+python3 -m pip install --user -U openai-whisper
 ```
 
 确认命令可用：
@@ -40,125 +57,204 @@ brew install openjdk maven yt-dlp ffmpeg
 java -version
 mvn -version
 yt-dlp --version
-ffmpeg -version
+./tool/ffmpeg -version
+whisper --help
 ```
 
-如果 `java -version` 不是 JDK 25，请先调整本机 `JAVA_HOME`。
+## 构建
 
-## 构建项目
-
-下载源码后，在项目根目录执行：
+在项目根目录执行：
 
 ```bash
 mvn clean package
 ```
 
-构建成功后会生成：
+生成的可执行 jar：
 
 ```text
 target/video-oven-0.1.0.jar
 ```
 
-也可以先跑测试：
+## 一键生成硬字幕视频
+
+脚本会自动完成三步：
+
+1. 下载 YouTube 原视频。
+2. 从本地视频识别并翻译字幕。
+3. 用 ffmpeg 烧录硬字幕。
+
+只传 DeepSeek API Key 和 YouTube 地址即可：
 
 ```bash
-mvn test
+scripts/bake-hard-subtitles.sh \
+  "你的 DeepSeek API Key" \
+  "https://www.youtube.com/watch?v=视频ID"
+```
+
+默认输出：
+
+- 字幕：`output.zh-en.srt`
+- 原视频：`source.mp4`
+- 硬字幕视频：`baked.with-hard-subtitles.mp4`
+
+也可以指定输出文件名：
+
+```bash
+scripts/bake-hard-subtitles.sh \
+  "你的 DeepSeek API Key" \
+  "https://www.youtube.com/watch?v=视频ID" \
+  output.zh-en.srt \
+  source.mp4 \
+  baked.mp4
+```
+
+脚本会先按直接下载视频的方式调用 `yt-dlp`，再对下载好的本地视频做字幕识别和翻译。
+
+如果 YouTube 报 `Sign in to confirm you're not a bot`，需要让 `yt-dlp` 使用浏览器 cookies。先确认你已经在对应浏览器里登录 YouTube，然后这样运行：
+
+```bash
+YT_DLP_COOKIES_FROM_BROWSER=chrome scripts/bake-hard-subtitles.sh \
+  "你的 DeepSeek API Key" \
+  "https://www.youtube.com/watch?v=视频ID"
+```
+
+常见值可以用 `chrome`、`safari`、`firefox`、`edge`。如果你导出了 `cookies.txt`，也可以这样：
+
+```bash
+YT_DLP_COOKIES=/path/to/cookies.txt scripts/bake-hard-subtitles.sh \
+  "你的 DeepSeek API Key" \
+  "https://www.youtube.com/watch?v=视频ID"
+```
+
+## 手动三步生成硬字幕视频
+
+如果不想用一键脚本，可以手动执行三步。每一步的输入和输出如下：
+
+```text
+YouTube 地址 -> source.mp4 -> output.zh-en.srt -> baked.mp4
+```
+
+### 第一步：下载原视频
+
+这一步只负责下载 YouTube 原视频，输出 `source.mp4`：
+
+```bash
+yt-dlp -f "bv*+ba/b" \
+  --merge-output-format mp4 \
+  -o "source.mp4" \
+  "https://www.youtube.com/watch?v=视频ID"
+```
+
+如果 YouTube 要求登录，可以加浏览器 cookies：
+
+```bash
+yt-dlp --cookies-from-browser chrome \
+  -f "bv*+ba/b" \
+  --merge-output-format mp4 \
+  -o "source.mp4" \
+  "https://www.youtube.com/watch?v=视频ID"
+```
+
+### 第二步：生成并翻译字幕
+
+这一步读取本地视频 `source.mp4`，先用 Whisper 识别英文字幕，再用 DeepSeek 翻译，输出 `output.zh-en.srt`：
+
+```bash
+java -jar target/video-oven-0.1.0.jar \
+  --input source.mp4 \
+  --output output.zh-en.srt \
+  --translator deepseek \
+  --deepseek-api-key "你的 DeepSeek API Key" \
+  --mode bilingual \
+  --source en \
+  --target zh-CN
+```
+
+如果你已经有字幕文件，可以把 `--input source.mp4` 换成字幕文件：
+
+```bash
+--input input.srt
+```
+
+### 第三步：烧录硬字幕
+
+这一步读取原视频 `source.mp4` 和字幕 `output.zh-en.srt`，输出硬字幕视频 `baked.mp4`：
+
+```bash
+./tool/ffmpeg -y \
+  -hide_banner \
+  -i source.mp4 \
+  -vf "subtitles='output.zh-en.srt'" \
+  -c:v libx264 \
+  -crf 18 \
+  -preset medium \
+  -c:a copy \
+  baked.mp4
+```
+
+### 另一种第二步：直接使用 YouTube 已有字幕
+
+如果视频本身有英文字幕，且 `yt-dlp` 下载字幕没有触发登录校验，可以不从本地视频识别，直接让工具读取 YouTube 字幕：
+
+```bash
+java -jar target/video-oven-0.1.0.jar \
+  --url "https://www.youtube.com/watch?v=视频ID" \
+  --output output.zh-en.srt \
+  --translator deepseek \
+  --deepseek-api-key "你的 DeepSeek API Key" \
+  --mode bilingual \
+  --source en \
+  --target zh-CN
+```
+
+如果 YouTube 字幕下载也要求登录，可以加：
+
+```bash
+--yt-dlp-cookies-from-browser chrome
 ```
 
 ## 快速试跑
 
-不调用真实翻译接口，只验证流程：
+用 `fake` 翻译器验证流程，不会调用真实翻译接口：
 
 ```bash
 java -jar target/video-oven-0.1.0.jar \
-  --url "https://www.youtube.com/watch?v=jKi2SvWOCXc" \
+  --url "https://www.youtube.com/watch?v=视频ID" \
   --output output.zh-en.srt \
   --translator fake \
-  --mode bilingual \
-  --source en \
-  --target zh-CN
+  --mode bilingual
 ```
 
-这会生成一个双语字幕文件：
+`fake` 会把原文前面加上 `[zh-CN]`，适合检查下载、识别、解析和输出流程是否正常。
 
-```text
-output.zh-en.srt
-```
+## 翻译 YouTube 视频
 
-`fake` 翻译器不会真的翻译，只会给英文前面加上 `[zh-CN]`，用于检查 `yt-dlp`、字幕解析、输出流程是否正常。
-
-## 使用 DeepSeek 真实翻译
-
-DeepSeek 翻译会自动分批发送字幕，默认每批 50 条。如果某一批仍然出现漏翻或合并条目，程序会自动把失败批次拆小后重试。
-
-推荐直接用参数传入 DeepSeek API Key：
+默认会先下载英文字幕。如果视频没有英文字幕，会自动回退到 Whisper 语音识别：
 
 ```bash
 java -jar target/video-oven-0.1.0.jar \
-  --url "https://www.youtube.com/watch?v=jKi2SvWOCXc" \
+  --url "https://www.youtube.com/watch?v=视频ID" \
   --output output.zh-en.srt \
   --translator deepseek \
   --deepseek-api-key "你的 DeepSeek API Key" \
-  --deepseek-model deepseek-v4-flash \
   --mode bilingual \
   --source en \
   --target zh-CN
 ```
 
-如果遇到模型偶发漏翻，可以把批量调小，例如每批 25 条：
+只使用已有字幕，不做语音识别：
 
 ```bash
-java -jar target/video-oven-0.1.0.jar \
-  --url "https://www.youtube.com/watch?v=jKi2SvWOCXc" \
-  --output output.zh-en.srt \
-  --translator deepseek \
-  --deepseek-api-key "你的 DeepSeek API Key" \
-  --deepseek-model deepseek-v4-flash \
-  --translation-batch-size 25 \
-  --mode bilingual \
-  --source en \
-  --target zh-CN
+--asr never
 ```
 
-也可以用环境变量：
+强制忽略平台字幕，重新语音识别：
 
 ```bash
-export DEEPSEEK_API_KEY="你的 DeepSeek API Key"
-
-java -jar target/video-oven-0.1.0.jar \
-  --url "https://www.youtube.com/watch?v=jKi2SvWOCXc" \
-  --output output.zh-en.srt \
-  --translator deepseek \
-  --deepseek-model deepseek-v4-flash \
-  --mode bilingual \
-  --source en \
-  --target zh-CN
+--asr force
 ```
 
-如果你使用 DeepSeek 兼容网关，可以指定接口地址：
-
-```bash
-java -jar target/video-oven-0.1.0.jar \
-  --url "https://www.youtube.com/watch?v=jKi2SvWOCXc" \
-  --output output.zh-en.srt \
-  --translator deepseek \
-  --deepseek-api-key "你的 DeepSeek API Key" \
-  --deepseek-base-url "https://api.deepseek.com" \
-  --deepseek-model deepseek-v4-flash \
-  --mode bilingual \
-  --source en \
-  --target zh-CN
-```
-
-## 使用本地字幕文件
-
-如果你已经有字幕文件，例如：
-
-```text
-input.vtt
-```
-
-可以这样翻译：
+## 翻译本地字幕
 
 ```bash
 java -jar target/video-oven-0.1.0.jar \
@@ -171,313 +267,191 @@ java -jar target/video-oven-0.1.0.jar \
   --target zh-CN
 ```
 
-`.srt` 输入也支持：
+`.srt` 输入也支持。
+
+## 翻译本地音视频
+
+没有字幕时，直接传音频或视频文件。程序会先调用 Whisper 生成临时英文字幕，再翻译：
 
 ```bash
 java -jar target/video-oven-0.1.0.jar \
-  --input input.srt \
-  --output output.zh.srt \
+  --input input.mp4 \
+  --output output.zh-en.srt \
   --translator deepseek \
   --deepseek-api-key "你的 DeepSeek API Key" \
-  --mode chinese \
+  --mode bilingual \
   --source en \
   --target zh-CN
 ```
 
+调整 Whisper 命令、模型和超时时间：
+
+```bash
+java -jar target/video-oven-0.1.0.jar \
+  --input input.mp3 \
+  --output output.zh-en.srt \
+  --translator deepseek \
+  --deepseek-api-key "你的 DeepSeek API Key" \
+  --whisper-command whisper \
+  --whisper-model medium \
+  --asr-timeout-minutes 180
+```
+
+## 使用 OpenAI 翻译
+
+先设置环境变量：
+
+```bash
+export OPENAI_API_KEY="你的 OpenAI API Key"
+```
+
+运行：
+
+```bash
+java -jar target/video-oven-0.1.0.jar \
+  --input input.srt \
+  --output output.zh-en.srt \
+  --translator openai \
+  --openai-model gpt-4.1-mini \
+  --mode bilingual
+```
+
 ## 输出模式
 
-`--mode bilingual` 输出双语字幕：
+双语字幕：
+
+```bash
+--mode bilingual
+```
+
+输出格式：
 
 ```text
 中文翻译
 English original
 ```
 
-`--mode chinese` 只输出中文字幕：
-
-```text
-中文翻译
-```
-
-## 下载原视频
-
-本工具的 `--url` 只下载字幕，不下载视频。如果你还需要原视频，可以用 `yt-dlp`：
+只输出中文字幕：
 
 ```bash
-yt-dlp -f "bv*+ba/b" \
-  --merge-output-format mp4 \
-  -o "input.%(ext)s" \
-  "https://www.youtube.com/watch?v=jKi2SvWOCXc"
+--mode chinese
 ```
 
-下载完成后通常会得到：
+## 常用参数
 
-```text
-input.mp4
-```
-
-## 上传到 B 站
-
-推荐方式是上传原视频，再在 B 站投稿页面单独上传 `.srt` 字幕：
-
-1. 上传 `input.mp4`。
-2. 在投稿编辑页找到字幕入口。
-3. 上传 `output.zh-en.srt`。
-4. 选择中文或中英双语字幕类型。
-5. 预览时间轴和字幕内容。
-6. 确认无误后发布。
-
-这种方式不会重新压缩视频画面，字幕也方便后续修改。
-
-## 合并软字幕轨（可开关，不一定默认显示）
-
-如果你只想把字幕作为一个可开关字幕轨写进 mp4，可以用：
-
-```bash
-./tool/ffmpeg -y \
-  -i input.mp4 \
-  -i output.zh-en.srt \
-  -c copy \
-  -c:s mov_text \
-  output.with-subtitle-track.mp4
-```
-
-生成：
-
-```text
-output.with-subtitle-track.mp4
-```
-
-这个文件里有字幕轨，但字幕没有烧进画面。很多播放器需要手动打开字幕轨，部分平台也可能忽略 mp4 内置字幕轨。
-
-可以用下面的命令确认字幕轨是否写入成功：
-
-```bash
-./tool/ffmpeg -hide_banner -i output.with-subtitle-track.mp4
-```
-
-如果看到类似这一行，说明软字幕轨已经存在：
-
-```text
-Stream #0:2: Subtitle: mov_text
-```
-
-如果你想让视频一打开就直接看到字幕，请使用下面的“压制硬字幕”。B 站投稿更推荐上传原视频后单独上传 `.srt`。
-
-## 压制硬字幕（直接显示在画面上）
-
-硬字幕会把字幕永久渲染进视频画面。生成的视频打开就能看到字幕，但视频画面会重新编码，处理速度比软字幕慢。
-
-这个能力依赖 ffmpeg 的 `subtitles/libass` 滤镜。先检查你当前的 ffmpeg 是否支持：
-
-如果你使用项目里的独立 ffmpeg：
-
-```bash
-./tool/ffmpeg -hide_banner -filters | grep -E "subtitles| ass "
-```
-
-如果你使用系统 ffmpeg：
-
-```bash
-ffmpeg -hide_banner -filters | grep -E "subtitles| ass "
-```
-
-能看到下面两行之一就可以压制硬字幕：
-
-```text
-ass               V->V       Render ASS subtitles onto input video using the libass library.
-subtitles         V->V       Render text subtitles onto input video using the libass library.
-```
-
-用项目里的独立 ffmpeg 压制硬字幕：
-
-```bash
-./tool/ffmpeg -y \
-  -i input.mp4 \
-  -vf "subtitles=filename='output.zh-en.srt'" \
-  -c:v libx264 \
-  -c:a copy \
-  output.with-hard-subtitles.mp4
-```
-
-如果你使用系统 ffmpeg，把命令开头的 `./tool/ffmpeg` 换成 `ffmpeg`。
-
-如果你的 ffmpeg 报错：
-
-```text
-No such filter: 'subtitles'
-```
-
-说明当前 ffmpeg 没有编入 `subtitles/libass` 滤镜，不能直接压制硬字幕。此时可以：
-
-- 改用 B 站单独上传 `.srt`。
-- 使用支持 `subtitles` 滤镜的 ffmpeg 版本。
-- 先用软字幕轨方案临时处理，但要在播放器里手动打开字幕轨。
-
-### 安装项目内独立 ffmpeg
-
-如果 Homebrew 的 ffmpeg 没有 `subtitles` 滤镜，可以下载一个独立的 macOS ffmpeg 放到项目里。这样不影响系统 ffmpeg，也不需要 conda。
-
-在项目根目录执行：
-
-```bash
-mkdir -p tool
-cd tool
-
-curl -L -o ffmpeg.zip \
-  "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip"
-
-unzip -o ffmpeg.zip
-chmod +x ffmpeg
-
-# macOS 如果拦截执行，去掉隔离属性
-xattr -dr com.apple.quarantine ffmpeg
-
-cd ../..
-```
-
-检查独立 ffmpeg 是否支持硬字幕：
-
-```bash
-./tool/ffmpeg -hide_banner -filters | grep -E "subtitles| ass "
-```
-
-看到下面两行之一就可以：
-
-```text
-ass               V->V       Render ASS subtitles onto input video using the libass library.
-subtitles         V->V       Render text subtitles onto input video using the libass library.
-```
-
-用独立 ffmpeg 压制硬字幕：
-
-```bash
-./tool/ffmpeg -y \
-  -i input.mp4 \
-  -vf "subtitles=filename='output.zh-en.srt'" \
-  -c:v libx264 \
-  -c:a copy \
-  output.with-hard-subtitles.mp4
-```
-
-如果你当前目录已经在 `tool` 里面，可以这样执行：
-
-```bash
-./ffmpeg -y \
-  -i ../input.mp4 \
-  -vf "subtitles=filename='../output.zh-en.srt'" \
-  -c:v libx264 \
-  -c:a copy \
-  ../output.with-hard-subtitles.mp4
-```
-
-生成的文件：
-
-```text
-output.with-hard-subtitles.mp4
-```
-
-这个文件就是字幕已经烧进画面里的视频。
-
-## 常见问题
-
-### Missing required option: '--input=<input>'
-
-你使用的是旧版本 jar。重新构建：
-
-```bash
-mvn clean package
-```
-
-新版本支持 `--input` 或 `--url` 二选一。
-
-### 找不到 yt-dlp
-
-安装：
-
-```bash
-brew install yt-dlp
-```
-
-确认：
-
-```bash
-yt-dlp --version
-```
-
-### YouTube 视频没有英文字幕
-
-先检查字幕：
-
-```bash
-yt-dlp --list-subs "https://www.youtube.com/watch?v=视频ID"
-```
-
-如果没有 `en` 字幕，当前版本不能自动语音识别。后续可以扩展 Whisper 或其他 ASR。
-
-### DeepSeek key 不想放环境变量
-
-直接用参数：
-
-```bash
---deepseek-api-key "你的 DeepSeek API Key"
-```
-
-### 字幕时间轴不准
-
-本工具保留原字幕时间轴。如果源字幕本身不准，需要先修正原始 `.srt` / `.vtt`。
-
-### 中文乱码
-
-确保字幕文件是 UTF-8。当前工具写出的 `.srt` 使用 Java 默认 UTF-8 写入。
-
-### 字幕里出现 &nbsp;
-
-`&nbsp;` 是 HTML 实体，常见于 YouTube 的 WebVTT 字幕。当前版本解析 `.srt` / `.vtt` 时会自动把 `&nbsp;`、`&amp;`、`&lt;` 等常见实体转成普通文本，并去掉简单 VTT 标签。
-
-如果旧字幕文件里已经有 `&nbsp;`，需要重新生成 `.srt`，再重新压制硬字幕。
-
-### DeepSeek returned X translations for Y inputs
-
-这是模型返回的翻译条数和输入字幕条数不一致。程序会自动把失败批次拆小后重试；如果拆到单条仍然失败，会主动报错停止，避免字幕文本和时间轴错位。
-
-DeepSeek 默认已按每批 50 条字幕分批翻译。如果某个视频仍然不稳定，可以调小初始批量：
-
-```bash
---translation-batch-size 25
-```
-
-如果还不稳定，可以继续调到 `10`。批量越小越稳，但请求次数会变多。
-
-## 命令参数
-
-核心参数：
-
-- `--input`：本地 `.srt` 或 `.vtt` 文件。
-- `--url`：在线视频 URL，目前主要用于 YouTube 字幕下载。
+- `--input`：本地字幕、音频或视频文件。
+- `--url`：在线视频 URL，目前主要用于 YouTube。
 - `--output`：输出 `.srt` 文件路径。
 - `--translator`：翻译器，支持 `fake`、`deepseek`、`openai`。
 - `--mode`：输出模式，支持 `bilingual`、`chinese`。
 - `--source`：源语言，默认 `en`。
 - `--target`：目标语言，默认 `zh-CN`。
-- `--translation-batch-size`：每次翻译请求包含的字幕条数，默认 `50`。
+- `--translation-batch-size`：每次翻译的字幕条数，默认 `50`。
+- `--asr`：语音识别模式，支持 `auto`、`never`、`force`，默认 `auto`。
+- `--whisper-command`：Whisper CLI 命令，默认 `whisper`。
+- `--whisper-model`：Whisper 模型，默认 `small`。
+- `--asr-timeout-minutes`：语音识别超时时间，默认 `120`。
+- `--yt-dlp-cookies-from-browser`：让 `yt-dlp` 读取浏览器 cookies，例如 `chrome` 或 `safari`。
+- `--yt-dlp-cookies`：让 `yt-dlp` 使用 `cookies.txt` 文件。
 
-DeepSeek 参数：
+## 常见问题
 
-- `--deepseek-api-key`：DeepSeek API Key。
-- `--deepseek-model`：DeepSeek 模型，默认 `deepseek-v4-flash`。
-- `--deepseek-base-url`：DeepSeek 兼容接口地址，默认 `https://api.deepseek.com`。
+### 找不到 yt-dlp、ffmpeg 或 whisper
 
-OpenAI 参数：
+确认命令能在当前 shell 里直接执行：
 
-- `--openai-model`：OpenAI 模型，默认 `gpt-4.1-mini`。
+```bash
+yt-dlp --version
+./tool/ffmpeg -version
+whisper --help
+```
 
-## 后续可扩展方向
+### YouTube 要求登录或提示不是机器人
 
-- 自动下载视频并生成完整烤肉视频。
-- 集成 Whisper / faster-whisper，在没有字幕时从音频识别英文。
-- 增加 Web 页面或桌面 UI。
+如果看到类似错误：
 
-## 版权提醒
+```text
+Sign in to confirm you're not a bot
+```
 
-从 YouTube 下载、翻译、搬运视频到其他平台前，请确认你有相应授权，并遵守 YouTube、B 站以及原作者的版权要求。
+说明 YouTube 拦截了 `yt-dlp` 的匿名下载请求。先用浏览器登录 YouTube，再给脚本加浏览器 cookies：
+
+```bash
+YT_DLP_COOKIES_FROM_BROWSER=chrome scripts/bake-hard-subtitles.sh \
+  "你的 DeepSeek API Key" \
+  "https://www.youtube.com/watch?v=视频ID"
+```
+
+这里的 `chrome` 要换成你实际登录 YouTube 的浏览器。如果你是在 Safari 登录，就用：
+
+```bash
+YT_DLP_COOKIES_FROM_BROWSER=safari scripts/bake-hard-subtitles.sh \
+  "你的 DeepSeek API Key" \
+  "https://www.youtube.com/watch?v=视频ID"
+```
+
+不要用 `sh scripts/bake-hard-subtitles.sh` 运行脚本。这个脚本使用 Bash，请直接运行：
+
+```bash
+scripts/bake-hard-subtitles.sh ...
+```
+
+或者：
+
+```bash
+bash scripts/bake-hard-subtitles.sh ...
+```
+
+### YouTube 提示 Requested format is not available
+
+如果看到类似错误：
+
+```text
+Requested format is not available. Use --list-formats for a list of available formats
+```
+
+说明 `yt-dlp` 当前没有找到匹配的视频格式。可能原因包括：
+
+- 这个视频当前地区或账号下可用格式不同。
+- YouTube 拦截后，`yt-dlp` 拿到的格式列表不完整。
+- `yt-dlp` 版本太旧，解析 YouTube 格式失败。
+
+一键脚本已经内置三层下载兜底：
+
+1. 先尝试高清音视频合并格式。
+2. 失败后尝试 `best[ext=mp4]/best`。
+3. 再失败后，不指定 `-f`，让 `yt-dlp` 使用默认格式。
+
+如果三层兜底仍然失败，先更新 `yt-dlp`：
+
+```bash
+brew upgrade yt-dlp
+```
+
+然后查看当前视频到底有哪些格式：
+
+```bash
+yt-dlp --list-formats "https://www.youtube.com/watch?v=视频ID"
+```
+
+如果需要带登录态查看格式：
+
+```bash
+yt-dlp --cookies-from-browser chrome \
+  --list-formats \
+  "https://www.youtube.com/watch?v=视频ID"
+```
+
+### DeepSeek 翻译条数不一致
+
+可以调小批量：
+
+```bash
+--translation-batch-size 25
+```
+
+如果还不稳定，继续调到 `10`。批量越小越稳，但请求次数会变多。
+
+### 字幕时间轴不准
+
+已有字幕会保留原时间轴。音视频 ASR 的时间轴由 Whisper 生成，准确度取决于音频质量和模型大小。
