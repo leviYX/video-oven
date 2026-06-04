@@ -9,13 +9,18 @@ public final class DeepSeekTranslator implements Translator {
     private final OpenAiCompatibleChatTranslator delegate;
 
     public DeepSeekTranslator(String apiKey, String baseUrl, String model) {
+        this(apiKey, baseUrl, model, TranslationFormat.SUBTITLE_CUE);
+    }
+
+    public DeepSeekTranslator(String apiKey, String baseUrl, String model, TranslationFormat format) {
         String resolvedBaseUrl = (baseUrl == null || baseUrl.isBlank()) ? DEFAULT_BASE_URL : baseUrl;
         String resolvedModel = (model == null || model.isBlank()) ? DEFAULT_MODEL : model;
         this.delegate = new OpenAiCompatibleChatTranslator(
                 "DeepSeek",
                 chatCompletionsEndpoint(resolvedBaseUrl),
                 apiKey,
-                resolvedModel
+                resolvedModel,
+                format
         );
     }
 

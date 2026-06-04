@@ -18,11 +18,22 @@ public final class OpenAiCompatibleChatTranslator implements Translator {
     private final URI endpoint;
     private final String apiKey;
     private final String model;
+    private final TranslationFormat format;
     private final HttpClient httpClient;
     private final ObjectMapper objectMapper;
 
     public OpenAiCompatibleChatTranslator(String providerName, URI endpoint, String apiKey, String model) {
-        this(providerName, endpoint, apiKey, model, HttpClient.newHttpClient(), new ObjectMapper());
+        this(providerName, endpoint, apiKey, model, TranslationFormat.SUBTITLE_CUE);
+    }
+
+    public OpenAiCompatibleChatTranslator(
+            String providerName,
+            URI endpoint,
+            String apiKey,
+            String model,
+            TranslationFormat format
+    ) {
+        this(providerName, endpoint, apiKey, model, format, HttpClient.newHttpClient(), new ObjectMapper());
     }
 
     OpenAiCompatibleChatTranslator(
@@ -30,6 +41,7 @@ public final class OpenAiCompatibleChatTranslator implements Translator {
             URI endpoint,
             String apiKey,
             String model,
+            TranslationFormat format,
             HttpClient httpClient,
             ObjectMapper objectMapper
     ) {
@@ -43,6 +55,7 @@ public final class OpenAiCompatibleChatTranslator implements Translator {
         this.endpoint = endpoint;
         this.apiKey = apiKey;
         this.model = model;
+        this.format = format;
         this.httpClient = httpClient;
         this.objectMapper = objectMapper;
     }
@@ -65,29 +78,11 @@ public final class OpenAiCompatibleChatTranslator implements Translator {
                 "messages", List.of(
                         Map.of(
                                 "role", "system",
-                                "content", """
-                                        You translate subtitle cues.
-                                        Return only a JSON array of objects.
-                                        Each output object must have the same numeric id and one translated text string.
-                                        Do not merge, omit, add, or renumber items.
-                                        """
+                                "content", systemPrompt()
                         ),
                         Map.of(
                                 "role", "user",
-                                "content", """
-                                        Translate each subtitle cue from %s to %s.
-                                        Preserve line breaks inside each cue when natural.
-                                        Return exactly the same ids as the input, in the same order.
-                                        Output format:
-                                        [{"id":0,"text":"translated text"}]
-
-                                        Input JSON:
-                                        %s
-                                        """.formatted(
-                                        sourceLanguage,
-                                        targetLanguage,
-                                        objectMapper.writeValueAsString(inputItems)
-                                )
+                                "content", userPrompt(sourceLanguage, targetLanguage, inputItems)
                         )
                 )
         ));
@@ -123,6 +118,56 @@ public final class OpenAiCompatibleChatTranslator implements Translator {
             throw new IOException(providerName + " response did not contain message content");
         }
         return parseTranslationItems(content.asText());
+    }
+
+    private String systemPrompt() {
+        return switch (format) {
+            case SUBTITLE_CUE -> """
+                    You translate subtitle cues.
+                    Return only a JSON array of objects.
+                    Each output object must have the same numeric id and one translated text string.
+                    Do not merge, omit, add, or renumber items.
+                    """;
+            case MARKDOWN_BLOCK -> """
+                    You translate Markdown article blocks.
+                    Return only a JSON array of objects.
+                    Each output object must have the same numeric id and one translated text string.
+                    Do not merge, omit, add, or renumber items.
+                    Preserve Markdown syntax, heading markers, list markers, links, URLs, inline code, and code fences.
+                    Translate only natural-language prose.
+                    """;
+        };
+    }
+
+    private String userPrompt(
+            String sourceLanguage,
+            String targetLanguage,
+            List<Map<String, Object>> inputItems
+    ) throws JsonProcessingException {
+        String inputJson = objectMapper.writeValueAsString(inputItems);
+        return switch (format) {
+            case SUBTITLE_CUE -> """
+                    Translate each subtitle cue from %s to %s.
+                    Preserve line breaks inside each cue when natural.
+                    Return exactly the same ids as the input, in the same order.
+                    Output format:
+                    [{"id":0,"text":"translated text"}]
+
+                    Input JSON:
+                    %s
+                    """.formatted(sourceLanguage, targetLanguage, inputJson);
+            case MARKDOWN_BLOCK -> """
+                    Translate each Markdown article block from %s to %s.
+                    Keep Markdown structure unchanged.
+                    Do not translate URLs, file paths, command names, code spans, or fenced code blocks.
+                    Return exactly the same ids as the input, in the same order.
+                    Output format:
+                    [{"id":0,"text":"translated markdown block"}]
+
+                    Input JSON:
+                    %s
+                    """.formatted(sourceLanguage, targetLanguage, inputJson);
+        };
     }
 
     private List<String> parseTranslationItems(String json) throws IOException {

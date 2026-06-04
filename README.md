@@ -227,6 +227,31 @@ java -jar target/video-oven-0.1.0.jar \
 
 `fake` 会把原文前面加上 `[zh-CN]`，适合检查下载、识别、解析和输出流程是否正常。
 
+## 翻译文章链接为 Markdown
+
+文章模式和视频模式分开：文章使用 `--article-url`，视频继续使用 `--url`。程序会抓取网页 HTML，提取正文内容，转换为 Markdown，再用 DeepSeek 翻译成目标语言。
+
+```bash
+java -jar target/video-oven-0.1.0.jar \
+  --article-url "https://example.com/technical-post" \
+  --output article.zh-CN.md \
+  --translator deepseek \
+  --deepseek-api-key "你的 DeepSeek API Key" \
+  --source en \
+  --target zh-CN
+```
+
+快速试跑可以使用 `fake` 翻译器，不会调用真实接口：
+
+```bash
+java -jar target/video-oven-0.1.0.jar \
+  --article-url "https://example.com/technical-post" \
+  --output article.zh-CN.md \
+  --translator fake
+```
+
+文章模式会优先提取 `<article>`、`<main>` 或 `role=main` 内容，并尽量保留标题、段落、列表、链接和代码块。代码块不会进入翻译批次，适合技术文章搬运。
+
 ## 翻译 YouTube 视频
 
 默认会先下载英文字幕。如果视频没有英文字幕，会自动回退到 Whisper 语音识别：
@@ -341,7 +366,8 @@ English original
 
 - `--input`：本地字幕、音频或视频文件。
 - `--url`：在线视频 URL，目前主要用于 YouTube。
-- `--output`：输出 `.srt` 文件路径。
+- `--article-url`：技术文章 URL，输出 Markdown 文档。
+- `--output`：输出 `.srt` 字幕或 `.md` 文章文件路径。
 - `--translator`：翻译器，支持 `fake`、`deepseek`、`openai`。
 - `--mode`：输出模式，支持 `bilingual`、`chinese`。
 - `--source`：源语言，默认 `en`。

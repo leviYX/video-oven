@@ -1,6 +1,7 @@
 package dev.videooven.cli;
 
 import dev.videooven.asr.AudioTranscriber;
+import dev.videooven.article.ArticleFetcher;
 import dev.videooven.platform.MediaDownloader;
 import dev.videooven.platform.SubtitleDownloader;
 import org.junit.jupiter.api.Test;
@@ -102,6 +103,35 @@ final class VideoOvenCliTest {
         assertEquals(0, exitCode);
         assertTrue(downloadedMedia.get());
         assertTrue(Files.readString(output).contains("[zh-CN] Hello from URL ASR"));
+    }
+
+    @Test
+    void articleUrlWritesMarkdownWithoutVideoDownloaders() throws Exception {
+        Path output = tempDir.resolve("article.md");
+        ArticleFetcher articleFetcher = url -> """
+                <article>
+                  <h1>Building Reliable CLIs</h1>
+                  <p>Keep commands predictable.</p>
+                </article>
+                """;
+
+        int exitCode = new CommandLine(new VideoOvenCli(
+                unusedSubtitleDownloader(),
+                unusedMediaDownloader(),
+                (mediaInput, sourceLanguage) -> {
+                    throw new AssertionError("ASR should not be called");
+                },
+                articleFetcher
+        )).execute(
+                "--article-url", "https://example.test/post",
+                "--output", output.toString(),
+                "--translator", "fake"
+        );
+
+        assertEquals(0, exitCode);
+        String markdown = Files.readString(output);
+        assertTrue(markdown.contains("[zh-CN] # Building Reliable CLIs"));
+        assertTrue(markdown.contains("[zh-CN] Keep commands predictable."));
     }
 
     private Path subtitleFile(String name, String text) throws IOException {

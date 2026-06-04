@@ -18,14 +18,25 @@ public final class OpenAiTranslator implements Translator {
 
     private final String apiKey;
     private final String model;
+    private final TranslationFormat format;
     private final HttpClient httpClient;
     private final ObjectMapper objectMapper;
 
     public OpenAiTranslator(String apiKey, String model) {
-        this(apiKey, model, HttpClient.newHttpClient(), new ObjectMapper());
+        this(apiKey, model, TranslationFormat.SUBTITLE_CUE);
     }
 
-    OpenAiTranslator(String apiKey, String model, HttpClient httpClient, ObjectMapper objectMapper) {
+    public OpenAiTranslator(String apiKey, String model, TranslationFormat format) {
+        this(apiKey, model, format, HttpClient.newHttpClient(), new ObjectMapper());
+    }
+
+    OpenAiTranslator(
+            String apiKey,
+            String model,
+            TranslationFormat format,
+            HttpClient httpClient,
+            ObjectMapper objectMapper
+    ) {
         if (apiKey == null || apiKey.isBlank()) {
             throw new IllegalArgumentException("apiKey is required");
         }
@@ -34,6 +45,7 @@ public final class OpenAiTranslator implements Translator {
         }
         this.apiKey = apiKey;
         this.model = model;
+        this.format = format;
         this.httpClient = httpClient;
         this.objectMapper = objectMapper;
     }
@@ -45,14 +57,7 @@ public final class OpenAiTranslator implements Translator {
             return List.of();
         }
 
-        String prompt = """
-                Translate each subtitle cue from %s to %s.
-                Preserve line breaks inside each cue when natural.
-                Return only a JSON array of strings with exactly the same number of items as the input.
-
-                Input JSON:
-                %s
-                """.formatted(sourceLanguage, targetLanguage, objectMapper.writeValueAsString(texts));
+        String prompt = prompt(sourceLanguage, targetLanguage, objectMapper.writeValueAsString(texts));
 
         String requestBody = objectMapper.writeValueAsString(Map.of(
                 "model", model,
@@ -75,6 +80,28 @@ public final class OpenAiTranslator implements Translator {
             throw new IOException("OpenAI returned " + translations.size() + " translations for " + texts.size() + " inputs");
         }
         return translations;
+    }
+
+    private String prompt(String sourceLanguage, String targetLanguage, String inputJson) {
+        return switch (format) {
+            case SUBTITLE_CUE -> """
+                    Translate each subtitle cue from %s to %s.
+                    Preserve line breaks inside each cue when natural.
+                    Return only a JSON array of strings with exactly the same number of items as the input.
+
+                    Input JSON:
+                    %s
+                    """.formatted(sourceLanguage, targetLanguage, inputJson);
+            case MARKDOWN_BLOCK -> """
+                    Translate each Markdown article block from %s to %s.
+                    Keep Markdown structure unchanged.
+                    Do not translate URLs, file paths, command names, code spans, or fenced code blocks.
+                    Return only a JSON array of strings with exactly the same number of items as the input.
+
+                    Input JSON:
+                    %s
+                    """.formatted(sourceLanguage, targetLanguage, inputJson);
+        };
     }
 
     private List<String> parseTranslations(String responseBody) throws IOException {

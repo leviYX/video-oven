@@ -2,6 +2,10 @@ package dev.videooven.cli;
 
 import dev.videooven.asr.AudioTranscriber;
 import dev.videooven.asr.WhisperCliAudioTranscriber;
+import dev.videooven.article.ArticleFetcher;
+import dev.videooven.article.ArticleMarkdownExtractor;
+import dev.videooven.article.ArticleProcessor;
+import dev.videooven.article.HttpArticleFetcher;
 import dev.videooven.processor.OutputMode;
 import dev.videooven.processor.SubtitleProcessor;
 import dev.videooven.platform.MediaDownloader;
@@ -16,12 +20,14 @@ import dev.videooven.translation.BatchedTranslator;
 import dev.videooven.translation.FakeTranslator;
 import dev.videooven.translation.DeepSeekTranslator;
 import dev.videooven.translation.OpenAiTranslator;
+import dev.videooven.translation.TranslationFormat;
 import dev.videooven.translation.Translator;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 
 import java.io.IOException;
+import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -32,12 +38,13 @@ import java.util.concurrent.Callable;
         name = "video-oven",
         mixinStandardHelpOptions = true,
         version = "video-oven 0.1.0",
-        description = "Translate English subtitles or transcribed media into Chinese or bilingual SRT subtitles."
+        description = "Translate subtitles, transcribed media, or article URLs into Chinese outputs."
 )
 public final class VideoOvenCli implements Callable<Integer> {
     private final SubtitleDownloader subtitleDownloader;
     private final MediaDownloader mediaDownloader;
     private final AudioTranscriber injectedAudioTranscriber;
+    private final ArticleFetcher articleFetcher;
 
     @Option(names = "--input", description = "Input .srt/.vtt subtitle file, or audio/video media file for ASR.")
     private Path input;
@@ -45,7 +52,10 @@ public final class VideoOvenCli implements Callable<Integer> {
     @Option(names = "--url", description = "Online video URL. Requires yt-dlp on PATH.")
     private String url;
 
-    @Option(names = "--output", required = true, description = "Output .srt subtitle file.")
+    @Option(names = "--article-url", description = "Article URL to translate into Markdown.")
+    private String articleUrl;
+
+    @Option(names = "--output", required = true, description = "Output .srt subtitle file or .md article file.")
     private Path output;
 
     @Option(names = "--source", defaultValue = "en", description = "Source language. Default: ${DEFAULT-VALUE}.")
@@ -94,11 +104,11 @@ public final class VideoOvenCli implements Callable<Integer> {
     private Path ytDlpCookies;
 
     public VideoOvenCli() {
-        this(null, null, null);
+        this(null, null, null, null);
     }
 
     public VideoOvenCli(SubtitleDownloader subtitleDownloader) {
-        this(subtitleDownloader, null, null);
+        this(subtitleDownloader, null, null, null);
     }
 
     VideoOvenCli(
@@ -106,9 +116,19 @@ public final class VideoOvenCli implements Callable<Integer> {
             MediaDownloader mediaDownloader,
             AudioTranscriber audioTranscriber
     ) {
+        this(subtitleDownloader, mediaDownloader, audioTranscriber, null);
+    }
+
+    VideoOvenCli(
+            SubtitleDownloader subtitleDownloader,
+            MediaDownloader mediaDownloader,
+            AudioTranscriber audioTranscriber,
+            ArticleFetcher articleFetcher
+    ) {
         this.subtitleDownloader = subtitleDownloader;
         this.mediaDownloader = mediaDownloader;
         this.injectedAudioTranscriber = audioTranscriber;
+        this.articleFetcher = articleFetcher;
     }
 
     public static void main(String[] args) {
@@ -118,6 +138,11 @@ public final class VideoOvenCli implements Callable<Integer> {
 
     @Override
     public Integer call() throws Exception {
+        if (articleUrl != null && !articleUrl.isBlank()) {
+            processArticle();
+            return 0;
+        }
+
         // CLI 只负责整理参数，字幕处理交给 processor。
         Path resolvedInput = resolveInput();
         SubtitleParser parser = parserFor(resolvedInput);
@@ -131,6 +156,28 @@ public final class VideoOvenCli implements Callable<Integer> {
 
         new SubtitleProcessor(parser, translator, outputMode).process(resolvedInput, output, sourceLanguage, targetLanguage);
         return 0;
+    }
+
+    private void processArticle() throws IOException, InterruptedException {
+        if (input != null || (url != null && !url.isBlank())) {
+            throw new CommandLine.ParameterException(
+                    new CommandLine(this),
+                    "Use --article-url by itself; do not combine it with --input or --url"
+            );
+        }
+        URI articleUri;
+        try {
+            articleUri = URI.create(articleUrl);
+        } catch (IllegalArgumentException e) {
+            throw new CommandLine.ParameterException(new CommandLine(this), "Invalid article URL: " + articleUrl, e);
+        }
+        if (articleUri.getScheme() == null || articleUri.getHost() == null) {
+            throw new CommandLine.ParameterException(new CommandLine(this), "Article URL must be absolute: " + articleUrl);
+        }
+
+        Translator translator = translatorFor(translatorName, TranslationFormat.MARKDOWN_BLOCK);
+        new ArticleProcessor(articleFetcher(), new ArticleMarkdownExtractor(), translator)
+                .process(articleUri, output, sourceLanguage, targetLanguage);
     }
 
     private Path resolveInput() throws IOException, InterruptedException {
@@ -251,6 +298,13 @@ public final class VideoOvenCli implements Callable<Integer> {
         return new YtDlpMediaDownloader(ytDlpOptions());
     }
 
+    private ArticleFetcher articleFetcher() {
+        if (articleFetcher != null) {
+            return articleFetcher;
+        }
+        return new HttpArticleFetcher();
+    }
+
     private YtDlpOptions ytDlpOptions() {
         String cookiesFromBrowser = firstNonBlank(
                 ytDlpCookiesFromBrowser,
@@ -270,6 +324,10 @@ public final class VideoOvenCli implements Callable<Integer> {
     }
 
     private Translator translatorFor(String name) {
+        return translatorFor(name, TranslationFormat.SUBTITLE_CUE);
+    }
+
+    private Translator translatorFor(String name, TranslationFormat format) {
         return switch (name.toLowerCase(Locale.ROOT)) {
             case "fake" -> new FakeTranslator();
             case "deepseek" -> {
@@ -281,7 +339,7 @@ public final class VideoOvenCli implements Callable<Integer> {
                     );
                 }
                 yield new BatchedTranslator(
-                        new DeepSeekTranslator(apiKey, deepSeekBaseUrl, deepSeekModel),
+                        new DeepSeekTranslator(apiKey, deepSeekBaseUrl, deepSeekModel, format),
                         translationBatchSize
                 );
             }
@@ -290,7 +348,7 @@ public final class VideoOvenCli implements Callable<Integer> {
                 if (apiKey == null || apiKey.isBlank()) {
                     throw new IllegalArgumentException("OPENAI_API_KEY is required when --translator openai is used");
                 }
-                yield new OpenAiTranslator(apiKey, openAiModel);
+                yield new OpenAiTranslator(apiKey, openAiModel, format);
             }
             default -> throw new IllegalArgumentException("Unsupported translator: " + name);
         };
