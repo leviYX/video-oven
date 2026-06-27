@@ -10,6 +10,8 @@ Examples:
   scripts/bake-hard-subtitles.sh "$DEEPSEEK_API_KEY" "https://www.youtube.com/watch?v=VIDEO_ID"
   scripts/bake-hard-subtitles.sh "$DEEPSEEK_API_KEY" "https://www.youtube.com/watch?v=VIDEO_ID" output.zh-en.srt source.mp4 baked.mp4
 
+Requires a prebuilt jar at target/video-oven-0.1.0.jar.
+
 If YouTube asks you to sign in, pass browser cookies:
   YT_DLP_COOKIES_FROM_BROWSER=chrome scripts/bake-hard-subtitles.sh "$DEEPSEEK_API_KEY" "https://www.youtube.com/watch?v=VIDEO_ID"
 EOF
@@ -77,17 +79,6 @@ download_video() {
   fi
 }
 
-jar_needs_build() {
-  local jar=$1
-  if [[ ! -f "$jar" ]]; then
-    return 0
-  fi
-  if find "$project_dir/src/main/java" "$project_dir/pom.xml" -newer "$jar" -print -quit | grep -q .; then
-    return 0
-  fi
-  return 1
-}
-
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 project_dir=$(cd "$script_dir/.." && pwd)
 
@@ -119,10 +110,8 @@ if [[ -n "${YT_DLP_COOKIES_FROM_BROWSER:-}" && -n "${YT_DLP_COOKIES:-}" ]]; then
 fi
 
 jar="$project_dir/target/video-oven-0.1.0.jar"
-if jar_needs_build "$jar"; then
-  echo "Jar missing or stale, building project..." >&2
-  require_command mvn
-  (cd "$project_dir" && mvn -q package)
+if [[ ! -f "$jar" ]]; then
+  die "Prebuilt jar is required: $jar. Build it first with: mvn clean package"
 fi
 
 if [[ -x "$project_dir/tool/ffmpeg" ]]; then

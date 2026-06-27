@@ -83,6 +83,8 @@ target/video-oven-0.1.0.jar
 2. 从本地视频识别并翻译字幕。
 3. 用 ffmpeg 烧录硬字幕。
 
+先自行执行 `mvn clean package`，确保 `target/video-oven-0.1.0.jar` 已经存在；脚本不会自动打包。
+
 只传 DeepSeek API Key 和 YouTube 地址即可：
 
 ```bash
@@ -509,4 +511,3 @@ baked.mp4
 YT_DLP_COOKIES_FROM_BROWSER=chrome scripts/bake-hard-subtitles.sh \
 "$DEEPSEEK_API_KEY" \
 "https://www.youtube.com/watch?v=pq2ZO3tQXW8"
-
