@@ -481,3 +481,32 @@ yt-dlp --cookies-from-browser chrome \
 ### 字幕时间轴不准
 
 已有字幕会保留原时间轴。音视频 ASR 的时间轴由 Whisper 生成，准确度取决于音频质量和模型大小。
+
+
+
+一键使用
+仓库里已经有现成的一键脚本：scripts/bake-hard-subtitles.sh。我刚本地验证了 --help，脚本可执行、入参就是你要的这两个必填项：DeepSeek key 和 YouTube URL。
+
+直接执行：
+
+scripts/bake-hard-subtitles.sh \
+"$DEEPSEEK_API_KEY" \
+"https://www.youtube.com/watch?v=pq2ZO3tQXW8"
+
+如果你想明确产出成 baked.mp4，用这个：
+
+scripts/bake-hard-subtitles.sh \
+"$DEEPSEEK_API_KEY" \
+"https://www.youtube.com/watch?v=pq2ZO3tQXW8" \
+output.zh-en.srt \
+source.mp4 \
+baked.mp4
+
+它会自动完成这三步：下载视频、识别并翻译双语字幕、烧录硬字幕。默认输出文件是 output.zh-en.srt、source.mp4、baked.with-hard-subtitles.mp4。
+
+如果 YouTube 拦截下载，要这样带 cookies 跑：
+
+YT_DLP_COOKIES_FROM_BROWSER=chrome scripts/bake-hard-subtitles.sh \
+"$DEEPSEEK_API_KEY" \
+"https://www.youtube.com/watch?v=pq2ZO3tQXW8"
+
