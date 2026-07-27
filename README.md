@@ -128,6 +128,63 @@ YT_DLP_COOKIES=/path/to/cookies.txt scripts/bake-hard-subtitles.sh \
   "https://www.youtube.com/watch?v=视频ID"
 ```
 
+### 多语言一键硬字幕脚本
+
+如果源语言不是英文，或者目标语言不是中文，可以使用多语言版本脚本：
+
+```bash
+scripts/bake-hard-subtitles-i18n.sh \
+  "你的 DeepSeek API Key" \
+  "https://www.youtube.com/watch?v=视频ID" \
+  en \
+  zh-CN
+```
+
+参数顺序是：
+
+```text
+<DeepSeek API Key> <YouTube URL> <source-language> <target-language> [subtitle.srt] [video.mp4] [baked-video.mp4]
+```
+
+语言值会原样传给 `video-oven` 的 `--source` 和 `--target` 参数，例如 `en`、`ko`、`ja`、`zh-CN`。比如韩语视频翻译成中文：
+
+```bash
+scripts/bake-hard-subtitles-i18n.sh \
+  "$DEEPSEEK_API_KEY" \
+  "https://www.youtube.com/watch?v=视频ID" \
+  ko \
+  zh-CN
+```
+
+也可以指定输出文件名：
+
+```bash
+scripts/bake-hard-subtitles-i18n.sh \
+  "$DEEPSEEK_API_KEY" \
+  "https://www.youtube.com/watch?v=视频ID" \
+  ja \
+  zh-CN \
+  output.zh-ja.srt \
+  source.mp4 \
+  baked.mp4
+```
+
+默认输出：
+
+- 字幕：`output.<目标语言>-<源语言>.srt`
+- 原视频：`source.mp4`
+- 硬字幕视频：`baked.with-hard-subtitles.mp4`
+
+如果 YouTube 要求登录，同样可以带浏览器 cookies：
+
+```bash
+YT_DLP_COOKIES_FROM_BROWSER=chrome scripts/bake-hard-subtitles-i18n.sh \
+  "$DEEPSEEK_API_KEY" \
+  "https://www.youtube.com/watch?v=视频ID" \
+  en \
+  zh-CN
+```
+
 ## 手动三步生成硬字幕视频
 
 如果不想用一键脚本，可以手动执行三步。每一步的输入和输出如下：
